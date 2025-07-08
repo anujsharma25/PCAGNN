@@ -1,0 +1,234 @@
+import random
+import math
+
+class SimpleGNN:
+    """
+    A simple graph neural network model with one layer.
+    Performs a graph convolution: out = A @ X @ W + b, where A is the adjacency matrix.
+    """
+    def __init__(self, input_dim, output_dim):
+        # Initialize weights and biases randomly
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.W = [[random.random() * 0.1 for _ in range(output_dim)] for _ in range(input_dim)]
+        self.b = [random.random() * 0.1 for _ in range(output_dim)]
+        self.parameters = [self.W, self.b]  # For optimizer access
+
+    def forward(self, X, edge_index, num_nodes):
+        """
+        Forward pass: Compute A @ X @ W + b.
+
+        Args:
+            X (list of lists): Node feature matrix (n x input_dim).
+            edge_index (list of tuples): List of [source, target] edges.
+            num_nodes (int): Number of nodes.
+
+        Returns:
+            list of lists: Output matrix (n x output_dim).
+        """
+        # Create adjacency matrix
+        A = [[0] * num_nodes for _ in range(num_nodes)]
+        for src, dst in edge_index:
+            A[src][dst] = 1
+            A[dst][src] = 1  # Undirected graph
+        # Compute A @ X
+        AX = matrix_multiply(A, X)
+        # Compute A @ X @ W
+        AXW = matrix_multiply(AX, self.W)
+        # Add bias
+        out = [[AXW[i][j] + self.b[j] for j in range(self.output_dim)] for i in range(num_nodes)]
+        return out
+
+class SGD:
+    """
+    Simple stochastic gradient descent optimizer.
+    """
+    def __init__(self, parameters, lr=0.01):
+        self.parameters = parameters  # List of matrices/vectors
+        self.lr = lr
+
+    def zero_grad(self):
+        """
+        Reset gradients to zero (not used explicitly here since we compute gradients per step).
+        """
+        pass
+
+    def step(self, grads):
+        """
+        Update parameters using gradients.
+
+        Args:
+            grads (list): List of gradients corresponding to parameters.
+        """
+        for param, grad in zip(self.parameters, grads):
+            for i in range(len(param)):
+                for j in range(len(param[0])):
+                    param[i][j] -= self.lr * grad[i][j]
+
+class MSELoss:
+    """
+    Mean squared error loss function.
+    """
+    def __call__(self, output, target):
+        """
+        Compute MSE loss and gradients w.r.t. output.
+
+        Args:
+            output (list of lists): Predicted values.
+            target (list of lists): True values.
+
+        Returns:
+            tuple: (loss value, gradients w.r.t. output)
+        """
+        n = len(output)
+        if len(output[0]) != len(target[0]):
+            raise ValueError("Output and target dimensions incompatible")
+        loss = 0
+        grad = [[0] * len(output[0]) for _ in range(n)]
+        for i in range(n):
+            for j in range(len(output[0])):
+                diff = output[i][j] - target[i][j]
+                loss += diff * diff
+                grad[i][j] = 2 * diff / n
+        loss /= n
+        return loss, grad
+
+def numerical_gradient(model, data, criterion, param_idx, i, j, epsilon=1e-6):
+    """
+    Compute numerical gradient for a specific parameter.
+
+    Args:
+        model: GNN model.
+        data: Data object with x, edge_index, y, train_mask.
+        criterion: Loss function.
+        param_idx (int): Index of parameter list (0 for W, 1 for b).
+        i, j (int): Indices of parameter to perturb.
+        epsilon (float): Perturbation size.
+
+    Returns:
+        float: Numerical gradient.
+    """
+    original_value = model.parameters[param_idx][i][j]
+    
+    # Compute loss with positive perturbation
+    model.parameters[param_idx][i][j] += epsilon
+    out_plus = model.forward(data['x'], data['edge_index'], len(data['x']))
+    train_out_plus = [out_plus[i] for i in range(len(out_plus)) if data['train_mask'][i]]
+    train_y = [data['y'][i] for i in range(len(data['y'])) if data['train_mask'][i]]
+    loss_plus, _ = criterion(train_out_plus, train_y)
+    
+    # Compute loss with negative perturbation
+    model.parameters[param_idx][i][j] -= 2 * epsilon
+    out_minus = model.forward(data['x'], data['edge_index'], len(data['x']))
+    train_out_minus = [out_minus[i] for i in range(len(out_minus)) if data['train_mask'][i]]
+    loss_minus, _ = criterion(train_out_minus, train_y)
+    
+    # Restore original value
+    model.parameters[param_idx][i][j] = original_value
+    
+    # Numerical gradient: (f(x+ε) - f(x-ε)) / (2ε)
+    return (loss_plus - loss_minus) / (2 * epsilon)
+
+def compute_gradients(model, data, criterion, output, train_mask):
+    """
+    Compute gradients for all model parameters using numerical differentiation.
+
+    Args:
+        model: GNN model.
+        data: Data object with x, edge_index, y, train_mask.
+        criterion: Loss function.
+        output: Model output.
+        train_mask: List of booleans indicating training nodes.
+
+    Returns:
+        list: Gradients for each parameter (W and b).
+    """
+    grad_W = [[0] * model.output_dim for _ in range(model.input_dim)]
+    grad_b = [0] * model.output_dim
+    
+    # Compute gradients for weights
+    for i in range(model.input_dim):
+        for j in range(model.output_dim):
+            grad_W[i][j] = numerical_gradient(model, data, criterion, 0, i, j)
+    
+    # Compute gradients for biases
+    for j in range(model.output_dim):
+        grad_b[j] = numerical_gradient(model, data, criterion, 1, 0, j)
+    
+    return [grad_W, grad_b]
+
+def train(model, data, optimizer, criterion):
+    """
+    Train the model for one epoch (Section III.C).
+
+    Args:
+        model: GNN model (SimpleGNN instance).
+        data (dict): Dictionary containing:
+            - x: Node feature matrix (n x input_dim).
+            - edge_index: List of [source, target] edges.
+            - y: Target labels (n x output_dim).
+            - train_mask: List of booleans indicating training nodes.
+        optimizer: Optimizer (SGD instance).
+        criterion: Loss function (MSELoss instance).
+
+    Returns:
+        float: Loss value for the epoch.
+    """
+    # Forward pass
+    out = model.forward(data['x'], data['edge_index'], len(data['x']))
+    
+    # Select outputs and targets for training nodes
+    train_out = [out[i] for i in range(len(out)) if data['train_mask'][i]]
+    train_y = [data['y'][i] for i in range(len(data['y'])) if data['train_mask'][i]]
+    
+    # Compute loss and gradients w.r.t. output
+    loss, grad_output = criterion(train_out, train_y)
+    
+    # Backpropagation: Compute gradients w.r.t. parameters
+    grads = compute_gradients(model, data, criterion, out, data['train_mask'])
+    
+    # Update parameters
+    optimizer.step(grads)
+    
+    return loss
+
+def print_matrix(matrix, name="Matrix"):
+    """
+    Print a matrix in a readable format.
+
+    Args:
+        matrix (list of lists): Matrix to print.
+        name (str): Name of the matrix.
+    """
+    print(f"{name}:")
+    for row in matrix:
+        print([f"{x:.4f}" for x in row])
+    print()
+
+# Example usage and testing
+if __name__ == "__main__":
+    # Example: Graph with 4 nodes, 2 features, 1 output (regression)
+    data = {
+        'x': [
+            [1.0, 2.0],
+            [2.0, 1.0],
+            [3.0, 3.0],
+            [4.0, 2.0]
+        ],
+        'edge_index': [(0, 1), (1, 2), (2, 3)],
+        'y': [[1.0], [2.0], [3.0], [4.0]],
+        'train_mask': [True, True, False, True]  # Train on nodes 0, 1, 3
+    }
+    
+    # Initialize model, optimizer, and loss
+    model = SimpleGNN(input_dim=2, output_dim=1)
+    optimizer = SGD(model.parameters, lr=0.01)
+    criterion = MSELoss()
+    
+    # Train for one epoch
+    loss = train(model, data, optimizer, criterion)
+    
+    # Print results
+    print(f"Training Loss: {loss:.4f}")
+    print_matrix(model.W, "Updated Weights")
+    print_matrix([model.b], "Updated Biases")
