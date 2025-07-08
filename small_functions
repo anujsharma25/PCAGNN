@@ -1,0 +1,149 @@
+import random
+import math
+import time
+
+def compute_laplacian(edge_index, num_nodes):
+    """
+    Compute the graph Laplacian matrix L = D - A.
+
+    Args:
+        edge_index (list of tuples): List of [source, target] edges.
+        num_nodes (int): Number of nodes in the graph.
+
+    Returns:
+        list of lists: Laplacian matrix L of size num_nodes x num_nodes.
+    """
+    adj = [[0] * num_nodes for _ in range(num_nodes)]
+    for src, dst in edge_index:
+        if 0 <= src < num_nodes and 0 <= dst < num_nodes:
+            adj[src][dst] = 1
+            adj[dst][src] = 1
+    degree = [sum(row) for row in adj]
+    D = [[degree[i] if i == j else 0 for j in range(num_nodes)] for i in range(num_nodes)]
+    L = [[D[i][j] - adj[i][j] for j in range(num_nodes)] for i in range(num_nodes)]
+    return L
+
+def matrix_multiply(A, B):
+    """
+    Multiply two matrices.
+
+    Args:
+        A (list of lists): First matrix.
+        B (list of lists): Second matrix.
+
+    Returns:
+        list of lists: Resulting matrix.
+    """
+    rows_A, cols_A = len(A), len(A[0])
+    rows_B, cols_B = len(B), len(B[0])
+    if cols_A != rows_B:
+        raise ValueError("Matrix dimensions incompatible for multiplication")
+    result = [[0] * cols_B for _ in range(rows_A)]
+    for i in range(rows_A):
+        for j in range(cols_B):
+            for k in range(cols_A):
+                result[i][j] += A[i][k] * B[k][j]
+    return result
+
+def matrix_transpose(X):
+    """
+    Transpose a matrix.
+
+    Args:
+        X (list of lists): Input matrix.
+
+    Returns:
+        list of lists: Transposed matrix.
+    """
+    return [[X[j][i] for j in range(len(X))] for i in range(len(X[0]))]
+
+def matrix_mean(X, axis=0):
+    """
+    Compute mean of matrix along specified axis.
+
+    Args:
+        X (list of lists): Input matrix.
+        axis (int): Axis along which to compute mean (0 for rows, 1 for columns).
+
+    Returns:
+        list: Mean vector.
+    """
+    if axis == 0:
+        n, d = len(X), len(X[0])
+        return [sum(X[i][j] for i in range(n)) / n for j in range(d)]
+    else:
+        n, d = len(X), len(X[0])
+        return [sum(X[i][j] for j in range(d)) / d for i in range(n)]
+
+def matrix_subtract(X, vec, axis=0):
+    """
+    Subtract vector from matrix along specified axis.
+
+    Args:
+        X (list of lists): Input matrix.
+        vec (list): Vector to subtract.
+        axis (int): Axis along which to subtract (0 for rows, 1 for columns).
+
+    Returns:
+        list of lists: Resulting matrix.
+    """
+    if axis == 0:
+        return [[X[i][j] - vec[j] for j in range(len(X[0]))] for i in range(len(X))]
+    else:
+        return [[X[i][j] - vec[i] for j in range(len(X[0]))] for i in range(len(X))]
+
+def matrix_scalar_multiply(A, scalar):
+    """
+    Multiply matrix by a scalar.
+
+    Args:
+        A (list of lists): Input matrix.
+        scalar (float): Scalar value.
+
+    Returns:
+        list of lists: Resulting matrix.
+    """
+    return [[scalar * A[i][j] for j in range(len(A[0]))] for i in range(len(A))]
+
+def matrix_std(X, axis=0):
+    """
+    Compute standard deviation of matrix along specified axis.
+
+    Args:
+        X (list of lists): Input matrix.
+        axis (int): Axis along which to compute std (0 for rows).
+
+    Returns:
+        list: Standard deviation vector.
+    """
+    mean = matrix_mean(X, axis)
+    n, d = len(X), len(X[0])
+    if axis == 0:
+        return [math.sqrt(sum((X[i][j] - mean[j])**2 for i in range(n)) / n) for j in range(d)]
+
+def power_iteration(A, num_iterations=100):
+    """
+    Compute the largest eigenvalue and corresponding eigenvector using power iteration.
+
+    Args:
+        A (list of lists): Square matrix.
+        num_iterations (int): Number of iterations.
+
+    Returns:
+        tuple: (eigenvalue, eigenvector)
+    """
+    n = len(A)
+    v = [random.random() for _ in range(n)]
+    norm = math.sqrt(sum(x * x for x in v))
+    v = [x / norm for x in v]
+    
+    for _ in range(num_iterations):
+        Av = [sum(A[i][j] * v[j] for j in range(n)) for i in range(n)]
+        eigenvalue = sum(Av[i] * v[i] for i in range(n))
+        norm = math.sqrt(sum(x * x for x in Av))
+        if norm == 0:
+            return 0, v
+        v = [x / norm for x in Av]
+    
+    return eigenvalue,romeda
+
