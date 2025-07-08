@@ -1,0 +1,137 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+from torch_geometric.datasets import Planetoid
+from torch_geometric.utils import to_dense_adj
+from scipy.sparse.linalg import eigsh
+import time
+
+class AdaptivePCALayer:
+    """Implements the Adaptive PCA Layer (Section III.B.1)"""
+    def __init__(self, lambda_reg=0.1, var_threshold=0.9, beta=0.5):
+        self.lambda_reg = lambda_reg  # Regularization parameter (lambda)
+        self.var_threshold = var_threshold  # Variance ratio threshold (theta)
+        self.beta = beta  # Graph density scaling factor
+
+    def compute_laplacian(self, edge_index, num_nodes):
+        """Compute graph Laplacian L = D - A"""
+        adj = to_dense_adj(edge_index, max_num_nodes=num_nodes)[0]
+        degree = adj.sum(dim=1)
+        D = torch.diag(degree)
+        L = D - adj
+        return L
+
+    def fit_transform(self, X, edge_index, num_nodes):
+        """
+        Apply graph-regularized PCA (Eq. 1) and select k adaptively (Algorithm 1)
+        X: Node feature matrix (n x d)
+        edge_index: Graph edges
+        num_nodes: Number of nodes
+        """
+        # Step 1: Compute covariance matrix
+        n, d = X.shape
+        X_centered = X - X.mean(dim=0)
+        Sigma = (1/n) * (X_centered.T @ X_centered)  # Covariance matrix
+
+        # Step 2: Compute graph Laplacian
+        L = self.compute_laplacian(edge_index, num_nodes)
+
+        # Step 3: Graph-regularized objective
+        XLX = X_centered.T @ L @ X_centered
+        objective_matrix = Sigma - self.lambda_reg * XLX
+
+        # Step 4: Eigendecomposition
+        eigenvalues, eigenvectors = torch.linalg.eigh(objective_matrix)
+        eigenvalues = eigenvalues.flip(0)  # Sort descending
+        eigenvectors = eigenvectors[:, torch.argsort(eigenvalues, descending=True)]
+
+        # Step 5: Select k based on variance ratio and graph density
+        var_ratio = torch.cumsum(eigenvalues, dim=0) / eigenvalues.sum()
+        k_var = torch.where(var_ratio >= self.var_threshold)[0][0].item() + 1
+
+        # Graph density adjustment
+        avg_degree = edge_index.shape[1] / num_nodes  # 2m/n
+        k_density = int(self.beta * avg_degree)
+        k = min(k_var, k_density, d)
+
+        # Step 6: Project features
+        W = eigenvectors[:, :k]
+        X_reduced = X_centered @ W
+        return X_reduced, k
+
+class PGFModel(nn.Module):
+    """PCA-GNN Fusion Model (Section III.A)"""
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super(PGFModel, self).__init__()
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, out_channels)
+
+    def forward(self, x, edge_index):
+        """GNN forward pass (Eq. 2)"""
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.conv2(x, edge_index)
+        return F.log_softmax(x, dim=1)
+
+def train(model, data, optimizer, criterion):
+    """Train the model (Section III.C)"""
+    model.train()
+    optimizer.zero_grad()
+    out = model(data.x, data.edge_index)
+    loss = criterion(out[data.train_mask], data.y[data.train_mask])
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+def evaluate(model, data):
+    """Evaluate accuracy"""
+    model.eval()
+    with torch.no_grad():
+        pred = model(data.x, data.edge_index).argmax(dim=1)
+        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
+        acc = correct / data.test_mask.sum()
+    return acc.item()
+
+def main():
+    # Load Cora dataset (Section V.A)
+    dataset = Planetoid(root='data/Planetoid', name='Cora')
+    data = dataset[0]
+
+    # Simulate high-dimensional features (d=1000)
+    torch.manual_seed(42)
+    X_orig = data.x
+    n, d_orig = X_orig.shape
+    d_new = 1000
+    random_projection = torch.randn(d_orig, d_new)
+    data.x = X_orig @ random_projection
+    data.x = data.x / data.x.std(dim=0, keepdim=True)  # Normalize
+
+    # Apply Adaptive PCA Layer
+    pca_layer = AdaptivePCALayer(lambda_reg=0.1, var_threshold=0.9, beta=0.5)
+    X_reduced, k = pca_layer.fit_transform(data.x, data.edge_index, data.num_nodes)
+    print(f"Reduced feature dimension: {k}")
+    data.x = X_reduced
+
+    # Initialize PGF model
+    model = PGFModel(in_channels=k, hidden_channels=64, out_channels=dataset.num_classes)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
+    criterion = nn.NLLLoss()
+
+    # Training loop
+    start_time = time.time()
+    for epoch in range(200):
+        loss = train(model, data, optimizer, criterion)
+        if epoch % 20 == 0:
+            acc = evaluate(model, data)
+            print(f'Epoch {epoch:03d}, Loss: {loss:.4f}, Test Acc: {acc:.4f}')
+    end_time = time.time()
+
+    # Final evaluation
+    final_acc = evaluate(model, data)
+    print(f'Final Test Accuracy: {final_acc:.4f}')
+    print(f'Training Time: {end_time - start_time:.2f} seconds')
+
+if __name__ == '__main__':
+    main()
