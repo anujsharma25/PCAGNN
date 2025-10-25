@@ -34,6 +34,11 @@ Example Output Epoch 0, Loss: 1.2345 Epoch 10, Loss: 0.9876 ... Epoch 90, Loss: 
 
 Model Architecture The PCAGNNFusion model operates in three phases:
 
+For C++ file,
+g++ -I/path/to/libtorch/include -I/path/to/libtorch/include/torch/csrc/api/include \
+    -L/path/to/libtorch/lib main.cpp -ltorch -lc10 -o pgf_model \
+    -Wl,-rpath,/path/to/libtorch/lib -std=c++17
+
 
 Notes
 
