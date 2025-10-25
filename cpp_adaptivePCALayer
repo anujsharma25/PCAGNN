@@ -1,0 +1,158 @@
+#include <torch/torch.h>
+#include <torch/script.h>
+#include <iostream>
+#include <vector>
+#include <chrono>
+
+// -------------------- Adaptive PCA Layer --------------------
+class AdaptivePCALayer {
+public:
+    AdaptivePCALayer(double lambda_reg = 0.1, double var_threshold = 0.9, double beta = 0.5)
+        : lambda_reg(lambda_reg), var_threshold(var_threshold), beta(beta) {}
+
+    // Compute Laplacian: L = D - A
+    torch::Tensor compute_laplacian(torch::Tensor edge_index, int64_t num_nodes) {
+        auto adj = torch::zeros({num_nodes, num_nodes});
+        auto src = edge_index[0];
+        auto dst = edge_index[1];
+
+        for (int64_t i = 0; i < src.size(0); i++) {
+            int64_t s = src[i].item<int64_t>();
+            int64_t d = dst[i].item<int64_t>();
+            adj[s][d] = 1;
+            adj[d][s] = 1; // undirected
+        }
+
+        auto degree = torch::sum(adj, 1);
+        auto D = torch::diag(degree);
+        return D - adj;
+    }
+
+    // Fit-transform step
+    std::pair<torch::Tensor, int64_t> fit_transform(torch::Tensor X, torch::Tensor edge_index, int64_t num_nodes) {
+        int64_t n = X.size(0);
+        int64_t d = X.size(1);
+
+        auto X_centered = X - X.mean(0, true);
+        auto Sigma = (1.0 / n) * X_centered.t().mm(X_centered);
+
+        auto L = compute_laplacian(edge_index, num_nodes);
+        auto XLX = X_centered.t().mm(L).mm(X_centered);
+        auto objective_matrix = Sigma - lambda_reg * XLX;
+
+        // Eigen decomposition
+        auto eig = torch::linalg_eigh(objective_matrix);
+        auto eigenvalues = std::get<0>(eig).flip(0);
+        auto eigenvectors = std::get<1>(eig).flip(1);
+
+        // Select k based on variance ratio
+        auto var_ratio = torch::cumsum(eigenvalues, 0) / torch::sum(eigenvalues);
+        auto k_var_tensor = torch::nonzero(var_ratio >= var_threshold)[0];
+        int64_t k_var = k_var_tensor.size(0) > 0 ? k_var_tensor[0].item<int64_t>() + 1 : d;
+
+        double avg_degree = edge_index.size(1) / static_cast<double>(num_nodes);
+        int64_t k_density = static_cast<int64_t>(beta * avg_degree);
+        int64_t k = std::min({k_var, k_density, d});
+
+        auto W = eigenvectors.slice(1, 0, k);
+        auto X_reduced = X_centered.mm(W);
+
+        return {X_reduced, k};
+    }
+
+private:
+    double lambda_reg;
+    double var_threshold;
+    double beta;
+};
+
+// -------------------- Simple GCN Layers --------------------
+struct GCNConvImpl : torch::nn::Module {
+    torch::nn::Linear lin{nullptr};
+
+    GCNConvImpl(int in_channels, int out_channels) {
+        lin = register_module("lin", torch::nn::Linear(in_channels, out_channels));
+    }
+
+    torch::Tensor forward(torch::Tensor x, torch::Tensor edge_index) {
+        int64_t num_nodes = x.size(0);
+        auto adj = torch::zeros({num_nodes, num_nodes});
+        auto src = edge_index[0];
+        auto dst = edge_index[1];
+        for (int64_t i = 0; i < src.size(0); i++) {
+            adj[src[i].item<int64_t>()][dst[i].item<int64_t>()] = 1.0;
+            adj[dst[i].item<int64_t>()][src[i].item<int64_t>()] = 1.0;
+        }
+
+        auto deg = torch::sum(adj, 1);
+        auto deg_inv_sqrt = torch::pow(deg, -0.5);
+        deg_inv_sqrt.masked_fill_(deg_inv_sqrt == INFINITY, 0);
+        auto D_inv_sqrt = torch::diag(deg_inv_sqrt);
+        auto norm_adj = D_inv_sqrt.mm(adj).mm(D_inv_sqrt);
+
+        auto out = norm_adj.mm(x);
+        out = lin->forward(out);
+        return out;
+    }
+};
+TORCH_MODULE(GCNConv);
+
+// -------------------- PGF Model --------------------
+struct PGFModelImpl : torch::nn::Module {
+    GCNConv conv1{nullptr};
+    GCNConv conv2{nullptr};
+
+    PGFModelImpl(int in_channels, int hidden_channels, int out_channels) {
+        conv1 = register_module("conv1", GCNConv(in_channels, hidden_channels));
+        conv2 = register_module("conv2", GCNConv(hidden_channels, out_channels));
+    }
+
+    torch::Tensor forward(torch::Tensor x, torch::Tensor edge_index, bool training = true) {
+        x = torch::relu(conv1->forward(x, edge_index));
+        if (training)
+            x = torch::dropout(x, 0.5, true);
+        x = conv2->forward(x, edge_index);
+        return torch::log_softmax(x, 1);
+    }
+};
+TORCH_MODULE(PGFModel);
+
+// -------------------- Main --------------------
+int main() {
+    torch::manual_seed(42);
+
+    // Dummy data (replace with real dataset loading)
+    int64_t num_nodes = 100;
+    int64_t num_edges = 300;
+    int64_t in_features = 1000;
+    int64_t num_classes = 7;
+
+    auto x = torch::randn({num_nodes, in_features});
+    auto edge_index = torch::randint(0, num_nodes, {2, num_edges}, torch::kLong);
+    auto y = torch::randint(0, num_classes, {num_nodes}, torch::kLong);
+
+    // Adaptive PCA
+    AdaptivePCALayer pca_layer(0.1, 0.9, 0.5);
+    auto [X_reduced, k] = pca_layer.fit_transform(x, edge_index, num_nodes);
+    std::cout << "Reduced feature dimension: " << k << std::endl;
+
+    // Initialize model
+    PGFModel model(k, 64, num_classes);
+    auto optimizer = torch::optim::Adam(model->parameters(), torch::optim::AdamOptions(0.01).weight_decay(5e-4));
+    auto criterion = torch::nn::NLLLoss();
+
+    // Train (simplified)
+    model->train();
+    for (int epoch = 0; epoch < 50; epoch++) {
+        optimizer.zero_grad();
+        auto out = model->forward(X_reduced, edge_index, true);
+        auto loss = criterion(out, y);
+        loss.backward();
+        optimizer.step();
+        if (epoch % 10 == 0)
+            std::cout << "Epoch " << epoch << " | Loss: " << loss.item<double>() << std::endl;
+    }
+
+    std::cout << "Training complete." << std::endl;
+    return 0;
+}
