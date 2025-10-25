@@ -1,0 +1,195 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <random>
+#include <stdexcept>
+#include <ctime>
+
+using namespace std;
+
+// Type alias for matrix
+using Matrix = vector<vector<double>>;
+
+// -------------------- Compute Laplacian --------------------
+Matrix compute_laplacian(const vector<pair<int, int>>& edge_index, int num_nodes) {
+    Matrix adj(num_nodes, vector<double>(num_nodes, 0.0));
+
+    for (const auto& e : edge_index) {
+        int src = e.first;
+        int dst = e.second;
+        if (src >= 0 && src < num_nodes && dst >= 0 && dst < num_nodes) {
+            adj[src][dst] = 1.0;
+            adj[dst][src] = 1.0;
+        }
+    }
+
+    vector<double> degree(num_nodes, 0.0);
+    for (int i = 0; i < num_nodes; ++i)
+        for (int j = 0; j < num_nodes; ++j)
+            degree[i] += adj[i][j];
+
+    Matrix L(num_nodes, vector<double>(num_nodes, 0.0));
+    for (int i = 0; i < num_nodes; ++i)
+        for (int j = 0; j < num_nodes; ++j)
+            L[i][j] = (i == j ? degree[i] : 0.0) - adj[i][j];
+
+    return L;
+}
+
+// -------------------- Matrix Multiply --------------------
+Matrix matrix_multiply(const Matrix& A, const Matrix& B) {
+    int rows_A = A.size(), cols_A = A[0].size();
+    int rows_B = B.size(), cols_B = B[0].size();
+
+    if (cols_A != rows_B)
+        throw invalid_argument("Matrix dimensions incompatible for multiplication");
+
+    Matrix result(rows_A, vector<double>(cols_B, 0.0));
+
+    for (int i = 0; i < rows_A; ++i)
+        for (int j = 0; j < cols_B; ++j)
+            for (int k = 0; k < cols_A; ++k)
+                result[i][j] += A[i][k] * B[k][j];
+
+    return result;
+}
+
+// -------------------- Matrix Transpose --------------------
+Matrix matrix_transpose(const Matrix& X) {
+    int n = X.size(), d = X[0].size();
+    Matrix T(d, vector<double>(n));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < d; ++j)
+            T[j][i] = X[i][j];
+    return T;
+}
+
+// -------------------- Matrix Mean --------------------
+vector<double> matrix_mean(const Matrix& X, int axis = 0) {
+    int n = X.size(), d = X[0].size();
+    vector<double> mean;
+
+    if (axis == 0) {
+        mean.assign(d, 0.0);
+        for (int j = 0; j < d; ++j)
+            for (int i = 0; i < n; ++i)
+                mean[j] += X[i][j];
+        for (auto& m : mean) m /= n;
+    } else {
+        mean.assign(n, 0.0);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < d; ++j)
+                mean[i] += X[i][j];
+        for (auto& m : mean) m /= d;
+    }
+    return mean;
+}
+
+// -------------------- Matrix Subtract --------------------
+Matrix matrix_subtract(const Matrix& X, const vector<double>& vec, int axis = 0) {
+    int n = X.size(), d = X[0].size();
+    Matrix result = X;
+    if (axis == 0) {
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < d; ++j)
+                result[i][j] -= vec[j];
+    } else {
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < d; ++j)
+                result[i][j] -= vec[i];
+    }
+    return result;
+}
+
+// -------------------- Scalar Multiply --------------------
+Matrix matrix_scalar_multiply(const Matrix& A, double scalar) {
+    int n = A.size(), d = A[0].size();
+    Matrix result = A;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < d; ++j)
+            result[i][j] *= scalar;
+    return result;
+}
+
+// -------------------- Matrix Standard Deviation --------------------
+vector<double> matrix_std(const Matrix& X, int axis = 0) {
+    vector<double> mean = matrix_mean(X, axis);
+    int n = X.size(), d = X[0].size();
+    vector<double> stddev(d, 0.0);
+
+    if (axis == 0) {
+        for (int j = 0; j < d; ++j) {
+            double sumsq = 0.0;
+            for (int i = 0; i < n; ++i)
+                sumsq += pow(X[i][j] - mean[j], 2);
+            stddev[j] = sqrt(sumsq / n);
+        }
+    }
+    return stddev;
+}
+
+// -------------------- Power Iteration --------------------
+pair<double, vector<double>> power_iteration(const Matrix& A, int num_iterations = 100) {
+    int n = A.size();
+    vector<double> v(n);
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_real_distribution<> dis(0.0, 1.0);
+
+    for (auto& x : v) x = dis(gen);
+
+    double norm = 0.0;
+    for (auto x : v) norm += x * x;
+    norm = sqrt(norm);
+    for (auto& x : v) x /= norm;
+
+    double eigenvalue = 0.0;
+    for (int iter = 0; iter < num_iterations; ++iter) {
+        vector<double> Av(n, 0.0);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                Av[i] += A[i][j] * v[j];
+
+        eigenvalue = 0.0;
+        for (int i = 0; i < n; ++i)
+            eigenvalue += Av[i] * v[i];
+
+        norm = 0.0;
+        for (auto x : Av) norm += x * x;
+        norm = sqrt(norm);
+        if (norm == 0.0) return {0.0, v};
+
+        for (int i = 0; i < n; ++i)
+            v[i] = Av[i] / norm;
+    }
+
+    return {eigenvalue, v};
+}
+
+// -------------------- MAIN --------------------
+int main() {
+    srand(time(nullptr));
+
+    // Example graph
+    vector<pair<int, int>> edges = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    int num_nodes = 4;
+
+    cout << "Computing Laplacian..." << endl;
+    Matrix L = compute_laplacian(edges, num_nodes);
+
+    cout << "Laplacian Matrix L:" << endl;
+    for (const auto& row : L) {
+        for (auto val : row) cout << val << " ";
+        cout << endl;
+    }
+
+    cout << "\nRunning Power Iteration..." << endl;
+    auto [eigval, eigvec] = power_iteration(L);
+
+    cout << "Approx. Largest Eigenvalue: " << eigval << endl;
+    cout << "Eigenvector: ";
+    for (auto v : eigvec) cout << v << " ";
+    cout << endl;
+
+    return 0;
+}
