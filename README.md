@@ -39,6 +39,8 @@ g++ -I/path/to/libtorch/include -I/path/to/libtorch/include/torch/csrc/api/inclu
     -L/path/to/libtorch/lib main.cpp -ltorch -lc10 -o pgf_model \
     -Wl,-rpath,/path/to/libtorch/lib -std=c++17
 
+g++ -std=c++17 -O2 matrix_ops.cpp -o matrix_ops
+./matrix_ops
 
 Notes
 
